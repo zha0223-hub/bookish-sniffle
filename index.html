@@ -186,3 +186,157 @@
     </script>
 </body>
 </html>
+    <script>
+        const API_URL = '/api';
+        const MAX_FILE_SIZE = 100 * 1024 * 1024;
+
+        // 1. Fetch and display all uploaded videos safely
+        async function loadBangers() {
+            try {
+                const res = await fetch(`${API_URL}/list`);
+                const videos = await res.json();
+                const grid = document.getElementById('videoGrid');
+                grid.innerHTML = '';
+
+                // FIX: Prevents engine crash if backend returns an error object instead of an array
+                if (!Array.isArray(videos)) {
+                    console.error("Server error:", videos);
+                    grid.innerHTML = `<p style="color: #ff3e3e; padding: 20px;">Storage connection initializing... Try uploading a file!</p>`;
+                    return;
+                }
+
+                videos.forEach((video, index) => {
+                    const card = document.createElement('div');
+                    card.className = 'card';
+                    card.innerHTML = `
+                        <div class="video-wrapper" onclick="openTheater('${video.url}')">
+                            <video src="${video.url}" loop id="vid-${index}" ontimeupdate="updateProgress('vid-${index}', 'progress-${index}')" muted></video>
+                            <div class="play-btn">▶</div>
+                        </div>
+                        <div class="progress-container">
+                            <div class="progress-bar" id="progress-${index}"></div>
+                        </div>
+                        <div class="title-container">
+                            <h3>${video.title.replace(/_/g, ' ')}</h3>
+                            <div class="action-btns">
+                                <button onclick="event.stopPropagation(); renameBanger('${video.id}')">✏️</button>
+                                <button class="del-btn" onclick="event.stopPropagation(); deleteBanger('${video.id}')">🗑️</button>
+                            </div>
+                        </div>
+                        <div class="controls-container">
+                            <div class="volume-container">
+                                <span class="volume-icon">🔊</span>
+                                <input type="range" class="volume-slider" min="0" max="1" step="0.1" value="0" oninput="changeVolume('vid-${index}', this.value); event.stopPropagation();" onclick="event.stopPropagation();">
+                            </div>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                    setTimeout(() => { document.getElementById(`vid-${index}`).play().catch(()=>{}); }, 100);
+                });
+            } catch (err) {
+                document.getElementById('videoGrid').innerHTML = '<p style="color:red;">Failed to connect to backend.</p>';
+            }
+        }
+
+        // 2. Full-Screen Theater Mode
+        function openTheater(videoUrl) {
+            document.querySelectorAll('video').forEach(v => v.pause());
+            const theater = document.getElementById('theaterMode');
+            const tVideo = document.getElementById('theaterVideo');
+            tVideo.src = videoUrl;
+            tVideo.volume = 1; 
+            theater.style.display = 'flex';
+        }
+
+        // 3. Close Theater Mode
+        function closeTheater() {
+            const theater = document.getElementById('theaterMode');
+            const tVideo = document.getElementById('theaterVideo');
+            tVideo.pause();
+            tVideo.src = '';
+            theater.style.display = 'none';
+            loadBangers(); 
+        }
+
+        // 4. Rename with password verification
+        async function renameBanger(id) {
+            const newTitle = prompt("Enter a new title for this clip:");
+            if (!newTitle) return;
+            const password = prompt("Enter password:");
+            if (!password) return;
+
+            const res = await fetch(`${API_URL}/rename`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, newTitle, password })
+            });
+            const data = await res.json();
+            if (res.ok) { loadBangers(); } else { alert(data.error); }
+        }
+
+        // 5. Delete with password verification
+        async function deleteBanger(id) {
+            const password = prompt("Enter password to delete:");
+            if (!password) return;
+
+            const res = await fetch(`${API_URL}/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, password })
+            });
+            const data = await res.json();
+            if (res.ok) { loadBangers(); } else { alert(data.error); }
+        }
+
+        // 6. Progress Tracking
+        function updateProgress(videoId, progressBarId) {
+            const video = document.getElementById(videoId);
+            const progressBar = document.getElementById(progressBarId);
+            if (video && progressBar && video.duration) {
+                const percentage = (video.currentTime / video.duration) * 100;
+                progressBar.style.width = `${percentage}%`;
+            }
+        }
+
+        // 7. Volume Control
+        function changeVolume(videoId, value) {
+            const video = document.getElementById(videoId);
+            if (video) video.volume = value;
+        }
+
+        // 8. Handle Video Uploads Safely
+        async function uploadVideo() {
+            const fileInput = document.getElementById('videoFile');
+            const passwordInput = document.getElementById('videoPassword');
+            
+            if (fileInput.files.length === 0) return alert('Select a file first!');
+            
+            // FIX: Added [0] index to target the specific binary file instead of the wrapper object
+            const file = fileInput.files[0]; 
+
+            if (file.size > MAX_FILE_SIZE) {
+                return alert('Hold up! That file is too big. Keep it under 100MB.');
+            }
+
+            const formData = new FormData();
+            formData.append('video', file);
+            formData.append('password', passwordInput.value);
+
+            try {
+                const res = await fetch(`${API_URL}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    fileInput.value = '';
+                    passwordInput.value = '';
+                    loadBangers();
+                } else { alert(data.error || 'Upload failed.'); }
+            } catch (err) { alert('Server error: connection failed.'); }
+        }
+
+        loadBangers();
+    </script>
+</body>
+</html>

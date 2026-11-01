@@ -2,110 +2,79 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
-
-// Serve the frontend files directly from the main directory
 app.use(express.static(__dirname));
 
-const uploadDir = path.join(__dirname, 'bangers_storage');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir);
-}
+// 🚀 PASTE YOUR COPIED SUPABASE STRINGS INSIDE THESE SINGLE QUOTES:
+const SUPABASE_URL = 'https://yisoajinlzwygavbydjj.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlpc29hamlubHp3eWdhdmJ5ZGpqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM0ODcyODIsImV4cCI6MjEwOTA2MzI4Mn0.lKlBRNVMzMBYlmj4n3S-zka5XzDh9LIDYyN56_J-bmQ';
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'bangers_storage/');
-    },
-    filename: (req, file, cb) => {
-        cb(null, `banger-${Date.now()}${path.extname(file.originalname)}`);
-    }
-});
+const storage = multer.memoryStorage();
+const MAX_SIZE = 100 * 1024 * 1024; // 100MB
+const upload = multer({ storage: storage, limits: { fileSize: MAX_SIZE } });
 
-const MAX_SIZE = 100 * 1024 * 1024; 
-const upload = multer({ 
-    storage: storage,
-    limits: { fileSize: MAX_SIZE }
-});
-
-app.use('/stream', express.static(uploadDir));
-
-const getMetaPath = (videoFilename) => {
-    return path.join(uploadDir, videoFilename + '.json');
-};
-
-app.post('/api/upload', upload.single('video'), (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: 'No video attached.' });
-    }
-    const password = req.body.password || '';
-    const metadata = { password: password };
+app.post('/api/upload', upload.single('video'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No video attached.' });
     
-    fs.writeFile(getMetaPath(req.file.filename), JSON.stringify(metadata), (err) => {
-        if (err) return res.status(500).json({ error: 'Failed to save video password.' });
-        res.json({ message: 'Banger uploaded successfully!' });
-    });
+    const password = req.body.password || '';
+    const filename = `banger-Date.now(){path.extname(req.file.originalname)}`;
+
+    const { data: fileData, error: fileErr } = await supabase.storage
+        .from('bangers')
+        .upload(filename, req.file.buffer, { contentType: req.file.mimetype });
+
+    if (fileErr) return res.status(500).json({ error: 'Cloud storage upload failed.' });
+
+    const metadata = Buffer.from(JSON.stringify({ password: password }));
+    await supabase.storage.from('bangers').upload(`${filename}.json`, metadata, { contentType: 'application/json' });
+
+    res.json({ message: 'Banger securely uploaded to the cloud!' });
 });
 
-app.get('/api/list', (req, res) => {
-    fs.readdir(uploadDir, (err, files) => {
-        if (err) return res.status(500).json({ error: 'Failed to read directory' });
-        
-        const videoFiles = files.filter(file => !file.startsWith('.') && !file.endsWith('.json'));
+app.get('/api/list', async (req, res) => {
+    try {
+        const { data: files, error } = await supabase.storage.from('bangers').list();
+        if (error) return res.status(500).json({ error: 'Failed to read cloud storage.' });
+
+        const videoFiles = files.filter(f => !f.name.endsWith('.json') && f.name !== '.emptyFolderPlaceholder');
         
         const bangers = videoFiles.map(file => {
+            const { data } = supabase.storage.from('bangers').getPublicUrl(file.name);
             return {
-                id: file,
-                title: file.replace(path.extname(file), ''),
-                url: `/stream/${file}`
+                id: file.name,
+                title: file.name.replace(path.extname(file.name), ''),
+                url: data.publicUrl
             };
         });
+
         res.json(bangers);
-    });
-});
-
-app.post('/api/rename', (req, res) => {
-    const { id, newTitle, password } = req.body;
-    if (!id || !newTitle) return res.status(400).json({ error: 'Missing information.' });
-    
-    const metaPath = getMetaPath(id);
-    if (!fs.existsSync(metaPath)) return res.status(404).json({ error: 'Metadata not found.' });
-    
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-    if (meta.password !== password) return res.status(403).json({ error: 'Incorrect password!' });
-    
-    const ext = path.extname(id);
-    const cleanTitle = newTitle.replace(/[^a-z0-9 _-]/gi, '_').toLowerCase();
-    const newFilename = `${cleanTitle}-${Date.now()}${ext}`;
-    
-    fs.rename(path.join(uploadDir, id), path.join(uploadDir, newFilename), (err) => {
-        if (err) return res.status(500).json({ error: 'Failed to rename file.' });
-        fs.unlinkSync(metaPath);
-        fs.writeFileSync(getMetaPath(newFilename), JSON.stringify({ password: password }));
-        res.json({ message: 'Banger renamed!' });
-    });
-});
-
-app.post('/api/delete', (req, res) => {
-    const { id, password } = req.body;
-    const metaPath = getMetaPath(id);
-    if (!fs.existsSync(metaPath)) return res.status(404).json({ error: 'Metadata not found.' });
-    
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-    if (meta.password !== password) return res.status(403).json({ error: 'Incorrect password!' });
-    
-    try {
-        fs.unlinkSync(path.join(uploadDir, id));
-        fs.unlinkSync(metaPath);
-        res.json({ message: 'Banger destroyed!' });
     } catch (err) {
-        res.status(500).json({ error: 'Failed to delete.' });
+        res.status(500).json({ error: err.message });
     }
+});
+
+app.post('/api/delete', async (req, res) => {
+    const { id, password } = req.body;
+
+    const { data, error } = await supabase.storage.from('bangers').download(`${id}.json`);
+    if (error) return res.status(404).json({ error: 'Metadata verification failed.' });
+
+    const text = await data.text();
+    const meta = JSON.parse(text);
+
+    if (meta.password !== password) {
+        return res.status(403).json({ error: 'Incorrect password!' });
+    }
+
+    await supabase.storage.from('bangers').remove([id, `${id}.json`]);
+    res.json({ message: 'Banger destroyed from cloud!' });
 });
 
 app.use((err, req, res, next) => {
@@ -116,5 +85,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 Bangers backend running on port ${PORT}`);
+    console.log(`🚀 Cloud Bangers backend running on port ${PORT}`);
 });
